@@ -142,8 +142,15 @@ def verify_output_consistency():
     """
     print("=== Output Consistency Verification ===")
 
-    # Use CPU for reproducible results (MPS/CUDA can have non-deterministic behavior)
-    device = torch.device("cpu")
+    # Use MPS device for all computations
+    if torch.backends.mps.is_available():
+        device = torch.device("mps")
+    elif torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
+    print(f"Using device: {device}")
+
     torch.manual_seed(42)  # Ensure reproducible results
 
     # Initialize two identical models
@@ -188,7 +195,7 @@ def verify_output_consistency():
     # Without cache - maintain full sequence
     full_sequence = x_prefill.clone()
 
-    for step in range(10):  # Test 10 decoding steps
+    for _ in range(10):  # Test 10 decoding steps
         x_token = torch.randn(batch_size, 1, hidden_size).to(device)
 
         # With cache
