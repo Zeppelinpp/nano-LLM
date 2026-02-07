@@ -17,12 +17,6 @@ uv run attention/attn.py
 uv run main.py
 ```
 
-### 为什么使用 uv？
-
-- **速度**：`uv` 比传统的 `pip` 和 `python` 命令更快
-- **依赖管理**：自动处理项目依赖
-- **一致性**：确保在不同环境中使用相同的 Python 版本和依赖
-
 ### 项目结构
 
 - `attention/` - 注意力机制相关代码
