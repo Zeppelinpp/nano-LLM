@@ -1,3 +1,9 @@
+---
+tags:
+  - torch
+createTime: 2026-02-07 16:33
+Last Modified: 2026-02-07 16:33
+---
 # Torch Basic
 
 ## 矩阵操作
