@@ -31,7 +31,7 @@ print(f"After split attention heads, each heads: {q.shape}")
 # batch_size, num_heads, seq_len, head_dim
 
 att = q @ k.transpose(2, 3) * (1.0 / math.sqrt(k.size(-1)))
-casual_mask = torch.tril(torch.ones(10, 10)).view(1, 1, 10, 10).bool().to(device)
+casual_mask = (torch.tril(torch.ones(10, 10)).view(1, 1, 10, 10) == 0).to(device)
 att = att.masked_fill(casual_mask, float("-inf"))
 att = F.softmax(att, dim=-1)
 y = att @ v
