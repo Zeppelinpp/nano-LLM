@@ -52,4 +52,10 @@ concated = torch.cat([tensor_1, tensor_2], dim=0) # 在第一个维度拼接
 # 注意拼接有顺序，按照tensor列表的顺序
 ```
 
+- `torch.view`: 改变矩阵形状，但不产生新的数据副本，高效且内存开销小
+  - 修改了view之后的tensor会改动原tensor
+  - view 只能作用于在内存中连续存储的tensor
+  - 示例(Attention 中的多头): `q = q.view(batch_size, num_heads, seq_len, hidden_size // num_heads`
+
+- `contiguous`: check tensor是否在内存中连续存储
 ---
