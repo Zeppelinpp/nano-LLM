@@ -95,11 +95,12 @@ class OpenWebTextDataLoader:
         )
 
 
-def train_epoch(model, dataloader, optimizer, criterion, device, epoch, gradient_accumulation_steps=1, writer=None):
+def train_epoch(model, dataloader, optimizer, criterion, device, epoch, gradient_accumulation_steps=1, log_interval=100, writer=None):
     """Train for one epoch"""
     model.train()
     total_loss = 0
     num_batches = 0
+    global_step = epoch * len(dataloader)
 
     pbar = tqdm(dataloader, desc=f"Epoch {epoch} [Train]")
     for batch_idx, batch in enumerate(pbar):
@@ -130,12 +131,21 @@ def train_epoch(model, dataloader, optimizer, criterion, device, epoch, gradient
         pbar.set_postfix({"loss": loss.item() * gradient_accumulation_steps,
                          "avg_loss": total_loss / num_batches})
 
+        # Log to TensorBoard at intervals
+        if writer is not None and (batch_idx + 1) % log_interval == 0:
+            step_loss = total_loss / num_batches
+            current_step = global_step + batch_idx + 1
+            writer.add_scalar("Train/Loss_step", step_loss, current_step)
+            writer.add_scalar("Train/Perplexity_step", torch.exp(torch.tensor(step_loss)), current_step)
+            writer.flush()  # Force write to disk
+
     avg_loss = total_loss / num_batches
 
-    # Log to TensorBoard
+    # Log epoch-level metrics to TensorBoard
     if writer is not None:
-        writer.add_scalar("Train/Loss", avg_loss, epoch)
-        writer.add_scalar("Train/Perplexity", torch.exp(torch.tensor(avg_loss)), epoch)
+        writer.add_scalar("Train/Loss_epoch", avg_loss, epoch)
+        writer.add_scalar("Train/Perplexity_epoch", torch.exp(torch.tensor(avg_loss)), epoch)
+        writer.flush()  # Force write to disk
 
     return avg_loss
 
@@ -147,7 +157,7 @@ def validate(model, dataloader, criterion, device, epoch, writer=None):
     num_batches = 0
 
     with torch.no_grad():
-        pbar = tqdm(dataloader, desc="[Validate]")
+        pbar = tqdm(dataloader, desc=f"Epoch {epoch} [Validate]")
         for batch in pbar:
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
@@ -165,8 +175,9 @@ def validate(model, dataloader, criterion, device, epoch, writer=None):
 
     # Log to TensorBoard
     if writer is not None:
-        writer.add_scalar("Validation/Loss", avg_loss, epoch)
-        writer.add_scalar("Validation/Perplexity", torch.exp(torch.tensor(avg_loss)), epoch)
+        writer.add_scalar("Validation/Loss_epoch", avg_loss, epoch)
+        writer.add_scalar("Validation/Perplexity_epoch", torch.exp(torch.tensor(avg_loss)), epoch)
+        writer.flush()  # Force write to disk
 
     return avg_loss
 
@@ -192,6 +203,8 @@ def main():
     parser.add_argument("--num_epochs", type=int, default=3)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=4,
                        help="Gradient accumulation for effective larger batch")
+    parser.add_argument("--log_interval", type=int, default=100,
+                       help="Log metrics to TensorBoard every N batches")
 
     parser.add_argument("--tokenizer_name", type=str, default="gpt2",
                        help="Use existing tokenizer from HuggingFace (e.g., gpt2)")
@@ -291,6 +304,7 @@ def main():
         train_loss = train_epoch(
             model, train_dataloader, optimizer, criterion, device, epoch,
             gradient_accumulation_steps=args.gradient_accumulation_steps,
+            log_interval=args.log_interval,
             writer=writer
         )
         train_losses.append(train_loss)
