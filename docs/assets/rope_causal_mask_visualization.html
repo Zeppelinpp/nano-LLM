@@ -239,6 +239,99 @@ body {
     gap: 8px;
 }
 
+/* Matrix with row labels layout */
+.matrix-with-rows {
+    display: flex;
+    gap: 0;
+}
+
+.row-labels {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    padding-right: 6px;
+}
+
+.row-label {
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    font-size: 10px;
+    color: var(--muted);
+    border-right: 2px solid transparent;
+    padding-right: 6px;
+    transition: all 0.4s ease;
+    white-space: nowrap;
+}
+
+.row-label.active {
+    color: var(--accent);
+    border-right-color: var(--accent);
+    font-weight: 500;
+}
+
+.row-label.cached {
+    color: var(--cache);
+    border-right-color: var(--cache);
+}
+
+/* Rotation coordinate system */
+.rotation-plot {
+    position: relative;
+    border-radius: 6px;
+    overflow: hidden;
+    background: #fff;
+    border: 1px solid var(--border);
+}
+
+.rotation-plot canvas {
+    display: block;
+}
+
+.rotation-replay {
+    position: absolute;
+    bottom: 8px;
+    right: 8px;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: rgba(255,255,255,0.85);
+    backdrop-filter: blur(4px);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.rotation-replay.visible {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.rotation-replay:hover {
+    background: var(--fg);
+    border-color: var(--fg);
+}
+
+.rotation-replay:hover svg path {
+    fill: var(--bg);
+}
+
+.rotation-replay svg {
+    width: 14px;
+    height: 14px;
+}
+
+.rotation-replay svg path {
+    fill: var(--muted);
+    transition: fill 0.2s ease;
+}
+
 .matrix-block-label {
     font-size: 13px;
     font-weight: 500;
@@ -654,13 +747,44 @@ function renderMatrixGrid(matrix, opts = {}) {
     return grid;
 }
 
-function renderPosIds(len, startPos, opts = {}) {
+// Row labels on the left side of the matrix (pos per row = per token)
+function renderRowLabels(numRows, startPos, opts = {}) {
+    let container = document.createElement('div');
+    container.className = 'row-labels';
+    for (let i = 0; i < numRows; i++) {
+        let label = document.createElement('div');
+        label.className = 'row-label';
+        label.textContent = `pos ${startPos + i}`;
+        if (opts.cached && i < (opts.cachedCount || 0)) {
+            label.classList.add('cached');
+        } else {
+            label.classList.add('active');
+        }
+        container.appendChild(label);
+    }
+    return container;
+}
+
+// Wraps row-labels + grid together
+function renderMatrixWithRowLabels(matrix, startPos, opts = {}) {
+    let wrapper = document.createElement('div');
+    wrapper.className = 'matrix-with-rows';
+    wrapper.appendChild(renderRowLabels(matrix.length, startPos, opts));
+    wrapper.appendChild(renderMatrixGrid(matrix, opts));
+    return wrapper;
+}
+
+// Column labels on top (for causal mask: K0, K1, ...)
+function renderColLabels(numCols, prefix, opts = {}) {
     let row = document.createElement('div');
     row.className = 'pos-row';
-    for (let i = 0; i < len; i++) {
+    // offset for the row-label column width
+    row.style.paddingLeft = '56px';
+    for (let i = 0; i < numCols; i++) {
         let cell = document.createElement('div');
         cell.className = 'pos-cell';
-        cell.textContent = `pos ${startPos + i}`;
+        cell.textContent = prefix + i;
+        cell.style.fontSize = '10px';
         if (opts.cached && i < (opts.cachedCount || 0)) {
             cell.classList.add('cached');
         } else {
@@ -670,6 +794,290 @@ function renderPosIds(len, startPos, opts = {}) {
     }
     return row;
 }
+
+// RoPE rotation coordinate plot with sweep animation
+function renderRotationPlot(origMatrix, ropeMatrix, startPos, opts = {}) {
+    let plotSize = 340;
+    let container = document.createElement('div');
+    container.className = 'matrix-block';
+    let label = document.createElement('div');
+    label.className = 'matrix-block-label';
+    label.textContent = 'RoPE Rotation (dim 0-1)';
+    container.appendChild(label);
+
+    let plotDiv = document.createElement('div');
+    plotDiv.className = 'rotation-plot';
+    let cvs = document.createElement('canvas');
+    cvs.width = plotSize * 2;
+    cvs.height = plotSize * 2;
+    cvs.style.width = plotSize + 'px';
+    cvs.style.height = plotSize + 'px';
+    plotDiv.appendChild(cvs);
+
+    // Replay button
+    let replayBtn = document.createElement('button');
+    replayBtn.className = 'rotation-replay';
+    replayBtn.innerHTML = '<svg viewBox="0 0 16 16"><path d="M2 8a6 6 0 0 1 10.2-4.3L11 5h5V0l-1.8 1.8A8 8 0 1 0 16 8h-2A6 6 0 0 1 2 8z"/></svg>';
+    replayBtn.title = 'Replay';
+    plotDiv.appendChild(replayBtn);
+
+    container.appendChild(plotDiv);
+
+    // Distinct colors per token (high contrast palette)
+    const TOKEN_COLORS = [
+        '#4e79a7', '#e15759', '#59a14f', '#f28e2b', '#b07aa1',
+        '#76b7b2', '#edc948', '#af7aa1', '#ff9da7', '#9c755f'
+    ];
+
+    requestAnimationFrame(() => {
+        let ctx = cvs.getContext('2d');
+        let ctxScaled = false;
+        let cx = plotSize / 2;
+        let cy = plotSize / 2;
+        let axisR = plotSize / 2 - 32;
+
+        // Scale
+        let maxVal = 0;
+        origMatrix.forEach(row => { maxVal = Math.max(maxVal, Math.abs(row[0]), Math.abs(row[1] || 0)); });
+        ropeMatrix.forEach(row => { maxVal = Math.max(maxVal, Math.abs(row[0]), Math.abs(row[1] || 0)); });
+        maxVal = Math.max(maxVal, 0.5) * 1.4;
+
+        function toX(v) { return cx + (v / maxVal) * axisR; }
+        function toY(v) { return cy - (v / maxVal) * axisR; }
+
+        let n = origMatrix.length;
+
+        // Precompute per-token geometry
+        let tokens = [];
+        for (let i = 0; i < n; i++) {
+            let ox = origMatrix[i][0], oy = origMatrix[i][1] || 0;
+            let rx = ropeMatrix[i][0], ry = ropeMatrix[i][1] || 0;
+            let origAngle = Math.atan2(oy, ox);
+            let ropeAngle = Math.atan2(ry, rx);
+            let radius = Math.sqrt(ox * ox + oy * oy);
+            let angleDiff = ropeAngle - origAngle;
+            while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
+            while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+
+            let isCached = opts.cached && i < (opts.cachedCount || 0);
+            let color = TOKEN_COLORS[i % TOKEN_COLORS.length];
+
+            tokens.push({ ox, oy, rx, ry, origAngle, ropeAngle, angleDiff, radius, color, isCached });
+        }
+
+        // Animation timing
+        let animDur = 1400;
+        let stagger = 150;
+        let totalTime = animDur + stagger * Math.max(0, n - 1);
+        let startTime = null;
+        let animId = null;
+
+        // Store the canvas id to cancel if re-rendered
+        let plotId = ++renderRotationPlot._plotCounter;
+
+        function startAnimation() {
+            replayBtn.classList.remove('visible');
+            startTime = null;
+            if (!ctxScaled) { ctx.scale(2, 2); ctxScaled = true; }
+            if (animId) cancelAnimationFrame(animId);
+            animId = requestAnimationFrame(drawFrame);
+        }
+
+        replayBtn.addEventListener('click', startAnimation);
+
+        function easeInOutCubic(t) {
+            return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+        }
+
+        function drawBg() {
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(0, 0, plotSize, plotSize);
+
+            // Grid
+            ctx.strokeStyle = '#eeecea';
+            ctx.lineWidth = 0.5;
+            for (let g = -5; g <= 5; g++) {
+                let gv = (g / 5) * maxVal;
+                ctx.beginPath(); ctx.moveTo(toX(-maxVal), toY(gv)); ctx.lineTo(toX(maxVal), toY(gv)); ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(toX(gv), toY(-maxVal)); ctx.lineTo(toX(gv), toY(maxVal)); ctx.stroke();
+            }
+
+            // Axes
+            ctx.strokeStyle = '#c5c2ba';
+            ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.moveTo(toX(-maxVal), cy); ctx.lineTo(toX(maxVal), cy); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(cx, toY(-maxVal)); ctx.lineTo(cx, toY(maxVal)); ctx.stroke();
+
+            // Axis labels
+            ctx.fillStyle = '#9e9b93';
+            ctx.font = '10px DM Mono';
+            ctx.textAlign = 'center';
+            ctx.fillText('dim 0', toX(maxVal) - 4, cy + 15);
+            ctx.fillText('dim 1', cx + 22, toY(maxVal) + 10);
+        }
+
+        function drawArrowVec(fromX, fromY, tipX, tipY, color, lineW, alpha) {
+            let dx = tipX - fromX, dy = tipY - fromY;
+            let len = Math.sqrt(dx * dx + dy * dy);
+            if (len < 2) return;
+
+            ctx.save();
+            ctx.globalAlpha = alpha;
+            ctx.strokeStyle = color;
+            ctx.fillStyle = color;
+            ctx.lineWidth = lineW;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+
+            // Shaft
+            ctx.beginPath();
+            ctx.moveTo(fromX, fromY);
+            ctx.lineTo(tipX, tipY);
+            ctx.stroke();
+
+            // Arrowhead
+            let headLen = Math.min(11, len * 0.28);
+            let angle = Math.atan2(dy, dx);
+            ctx.beginPath();
+            ctx.moveTo(tipX, tipY);
+            ctx.lineTo(tipX - headLen * Math.cos(angle - 0.4), tipY - headLen * Math.sin(angle - 0.4));
+            ctx.lineTo(tipX - headLen * Math.cos(angle + 0.4), tipY - headLen * Math.sin(angle + 0.4));
+            ctx.closePath();
+            ctx.fill();
+            ctx.restore();
+        }
+
+        function drawTrailArc(tk, progress) {
+            if (tk.radius < 0.01 || Math.abs(tk.angleDiff * progress) < 0.002) return;
+            let steps = Math.max(24, Math.ceil(Math.abs(tk.angleDiff * progress) * 50));
+
+            ctx.save();
+            ctx.strokeStyle = tk.color;
+            ctx.globalAlpha = 0.3;
+            ctx.lineWidth = 2;
+            ctx.setLineDash([5, 4]);
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            for (let s = 0; s <= steps; s++) {
+                let a = tk.origAngle + tk.angleDiff * progress * (s / steps);
+                let px = toX(tk.radius * Math.cos(a));
+                let py = toY(tk.radius * Math.sin(a));
+                if (s === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+            }
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.restore();
+        }
+
+        function drawFrame(timestamp) {
+            // Guard against stale animation loops
+            if (plotId !== renderRotationPlot._plotCounter) return;
+
+            if (!startTime) startTime = timestamp;
+            let elapsed = timestamp - startTime;
+
+            drawBg();
+
+            for (let i = 0; i < n; i++) {
+                let tk = tokens[i];
+                let tRaw = Math.max(0, Math.min(1, (elapsed - i * stagger) / animDur));
+                let t = easeInOutCubic(tRaw);
+
+                if (tk.radius < 0.01) continue;
+
+                // Current interpolated angle
+                let curAngle = tk.origAngle + tk.angleDiff * t;
+                let curDataX = tk.radius * Math.cos(curAngle);
+                let curDataY = tk.radius * Math.sin(curAngle);
+
+                // 1) Trail arc (grows as animation progresses)
+                if (t > 0) drawTrailArc(tk, t);
+
+                // 2) Ghost of original vector (fades out)
+                let ghostAlpha = 0.12 + 0.18 * (1 - t);
+                drawArrowVec(cx, cy, toX(tk.ox), toY(tk.oy), tk.color, 1.2, ghostAlpha);
+
+                // 3) Animated arrow sweeping from original to rotated
+                drawArrowVec(cx, cy, toX(curDataX), toY(curDataY), tk.color, 2.2, 1);
+
+                // 4) Filled dot at arrow tip
+                ctx.fillStyle = tk.color;
+                ctx.beginPath();
+                ctx.arc(toX(curDataX), toY(curDataY), 5.5, 0, Math.PI * 2);
+                ctx.fill();
+
+                // 5) When settled, show original position as hollow ring
+                if (t >= 1) {
+                    ctx.save();
+                    ctx.strokeStyle = tk.color;
+                    ctx.lineWidth = 1.5;
+                    ctx.fillStyle = '#fff';
+                    ctx.globalAlpha = 0.7;
+                    ctx.beginPath();
+                    ctx.arc(toX(tk.ox), toY(tk.oy), 4, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.stroke();
+                    ctx.restore();
+                }
+
+                // 6) Label (fades in after some progress)
+                if (t > 0.15) {
+                    ctx.save();
+                    ctx.globalAlpha = Math.min(1, (t - 0.15) / 0.25);
+                    ctx.fillStyle = tk.color;
+                    ctx.font = 'bold 10px DM Mono';
+                    ctx.textAlign = 'left';
+                    ctx.fillText('p' + (startPos + i), toX(curDataX) + 10, toY(curDataY) + 4);
+                    ctx.restore();
+                }
+            }
+
+            // Legend (appears near end)
+            let legendT = Math.max(0, Math.min(1, (elapsed - totalTime * 0.55) / 500));
+            if (legendT > 0) {
+                ctx.save();
+                ctx.globalAlpha = legendT;
+                let ly = plotSize - 18;
+                ctx.font = '9px DM Mono';
+                ctx.textAlign = 'left';
+                ctx.fillStyle = '#9e9b93';
+
+                // Hollow ring = before
+                ctx.strokeStyle = '#9e9b93'; ctx.lineWidth = 1.2; ctx.fillStyle = '#fff';
+                ctx.beginPath(); ctx.arc(14, ly, 3.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+                ctx.fillStyle = '#9e9b93';
+                ctx.fillText('before', 22, ly + 3);
+
+                // Arrow = after
+                drawArrowVec(68, ly, 85, ly, '#9e9b93', 1.5, legendT);
+                ctx.fillStyle = '#9e9b93';
+                ctx.fillText('after', 92, ly + 3);
+
+                // Dashed arc = trail
+                ctx.strokeStyle = '#9e9b93'; ctx.globalAlpha = legendT * 0.45;
+                ctx.setLineDash([3, 3]); ctx.lineWidth = 1.5;
+                ctx.beginPath(); ctx.arc(146, ly, 8, -0.6, 0.6); ctx.stroke();
+                ctx.setLineDash([]);
+                ctx.globalAlpha = legendT;
+                ctx.fillStyle = '#9e9b93';
+                ctx.fillText('trail', 158, ly + 3);
+                ctx.restore();
+            }
+
+            if (elapsed < totalTime + 400) {
+                animId = requestAnimationFrame(drawFrame);
+            } else {
+                // Animation done — show replay button
+                replayBtn.classList.add('visible');
+            }
+        }
+
+        startAnimation();
+    });
+
+    return container;
+}
+renderRotationPlot._plotCounter = 0;
 
 function makeBlock(labelText, labelClass) {
     let block = document.createElement('div');
@@ -755,21 +1163,19 @@ function renderTrainScene() {
         flow1.className = 'matrix-flow';
 
         let qBlock = makeBlock('Q  [' + S + ' x ' + D + ']');
-        qBlock.appendChild(renderPosIds(S, 0));
-        qBlock.appendChild(renderMatrixGrid(q_orig, { delay: true }));
+        qBlock.appendChild(renderMatrixWithRowLabels(q_orig, 0, { delay: true }));
         flow1.appendChild(qBlock);
 
         flow1.appendChild(makeOp(','));
 
         let kBlock = makeBlock('K  [' + S + ' x ' + D + ']');
-        kBlock.appendChild(renderPosIds(S, 0));
-        kBlock.appendChild(renderMatrixGrid(k_orig, { delay: true }));
+        kBlock.appendChild(renderMatrixWithRowLabels(k_orig, 0, { delay: true }));
         flow1.appendChild(kBlock);
 
         sec1.appendChild(flow1);
         sec1.appendChild(makeAnnotation([
             '<code>q = W_q @ x</code>, <code>k = W_k @ x</code>',
-            'Each row corresponds to one token in the full sequence.'
+            'Each row is one token vector. Left labels show position index.'
         ]));
         main.appendChild(sec1);
     }
@@ -792,22 +1198,23 @@ function renderTrainScene() {
         flow2.className = 'matrix-flow';
 
         let qrBlock = makeBlock('Q after RoPE');
-        qrBlock.appendChild(renderPosIds(S, 0));
-        qrBlock.appendChild(renderMatrixGrid(q_rope, { changed: q_orig, delay: true }));
+        qrBlock.appendChild(renderMatrixWithRowLabels(q_rope, 0, { changed: q_orig, delay: true }));
         flow2.appendChild(qrBlock);
 
         flow2.appendChild(makeOp(','));
 
         let krBlock = makeBlock('K after RoPE');
-        krBlock.appendChild(renderPosIds(S, 0));
-        krBlock.appendChild(renderMatrixGrid(k_rope, { changed: k_orig, delay: true }));
+        krBlock.appendChild(renderMatrixWithRowLabels(k_rope, 0, { changed: k_orig, delay: true }));
         flow2.appendChild(krBlock);
+
+        // Rotation coordinate plot
+        flow2.appendChild(renderRotationPlot(q_orig, q_rope, 0));
 
         sec2.appendChild(flow2);
         sec2.appendChild(makeAnnotation([
             'Each row <code>i</code> is rotated by angle <code>theta = pos_i * freq</code>.',
-            'Highlighted cells show values changed by rotation.',
-            'In training, all positions are encoded simultaneously.'
+            'Highlighted cells: values changed by rotation. Plot: hollow = before, filled = after RoPE.',
+            'Position 0 has zero rotation. Higher positions rotate more, encoding relative distance.'
         ]));
         main.appendChild(sec2);
     }
@@ -846,23 +1253,19 @@ function renderTrainScene() {
         }
 
         let maskBlock = makeBlock('Attention Mask');
-        // Add K position labels on top
-        let kLabels = document.createElement('div');
-        kLabels.className = 'pos-row';
-        for (let j = 0; j < S; j++) {
-            let c = document.createElement('div');
-            c.className = 'pos-cell active';
-            c.textContent = 'K' + j;
-            c.style.fontSize = '9px';
-            kLabels.appendChild(c);
-        }
-        maskBlock.appendChild(kLabels);
-        maskBlock.appendChild(maskGrid);
+        // Column labels: K positions on top
+        maskBlock.appendChild(renderColLabels(S, 'K'));
+        // Row labels: Q positions on left + grid
+        let maskWrapper = document.createElement('div');
+        maskWrapper.className = 'matrix-with-rows';
+        maskWrapper.appendChild(renderRowLabels(S, 0, {}));
+        maskWrapper.appendChild(maskGrid);
+        maskBlock.appendChild(maskWrapper);
 
         sec3.appendChild(maskBlock);
         sec3.appendChild(makeAnnotation([
-            'Upper triangle is <code>-inf</code>: each token can only attend to itself and earlier positions.',
-            'Mask shape matches <code>[seq_len, seq_len]</code> — all Q and K come from the same full sequence.'
+            'Rows = Q tokens, Columns = K tokens. Upper triangle is <code>-inf</code>.',
+            'Each Q_i can only attend to K_0..K_i (itself and earlier positions).'
         ]));
         main.appendChild(sec3);
     }
@@ -913,15 +1316,13 @@ function renderInferenceScene() {
         flow1.className = 'matrix-flow';
 
         let qBlock = makeBlock('Q_new  [1 x ' + D + ']', 'new-label');
-        qBlock.appendChild(renderPosIds(1, newPos));
-        qBlock.appendChild(renderMatrixGrid(q_new_orig, { delay: true }));
+        qBlock.appendChild(renderMatrixWithRowLabels(q_new_orig, newPos, { delay: true }));
         flow1.appendChild(qBlock);
 
         flow1.appendChild(makeOp(','));
 
         let kBlock = makeBlock('K_new  [1 x ' + D + ']', 'new-label');
-        kBlock.appendChild(renderPosIds(1, newPos));
-        kBlock.appendChild(renderMatrixGrid(k_new_orig, { delay: true }));
+        kBlock.appendChild(renderMatrixWithRowLabels(k_new_orig, newPos, { delay: true }));
         flow1.appendChild(kBlock);
 
         sec1.appendChild(flow1);
@@ -951,16 +1352,14 @@ function renderInferenceScene() {
 
         // Cached K (already has RoPE applied at positions 0..cacheLen-1)
         let kcBlock = makeBlock('K_cache  [' + cacheLen + ' x ' + D + ']', 'cache-label');
-        kcBlock.appendChild(renderPosIds(cacheLen, 0, { cached: true, cachedCount: cacheLen }));
-        kcBlock.appendChild(renderMatrixGrid(k_cache_rope, { cacheRows: cacheLen, delay: true }));
+        kcBlock.appendChild(renderMatrixWithRowLabels(k_cache_rope, 0, { cacheRows: cacheLen, cached: true, cachedCount: cacheLen, delay: true }));
         flow2.appendChild(kcBlock);
 
         flow2.appendChild(makeOp('+'));
 
         // New K after RoPE
         let knBlock = makeBlock('K_new (RoPE@' + newPos + ')', 'new-label');
-        knBlock.appendChild(renderPosIds(1, newPos));
-        knBlock.appendChild(renderMatrixGrid(k_new_rope, { changed: k_new_orig, delay: true }));
+        knBlock.appendChild(renderMatrixWithRowLabels(k_new_rope, newPos, { changed: k_new_orig, delay: true }));
         flow2.appendChild(knBlock);
 
         // Arrow
@@ -969,25 +1368,29 @@ function renderInferenceScene() {
         // Concatenated result
         let k_concat = [...k_cache_rope, ...k_new_rope];
         let kcatBlock = makeBlock('K_full  [' + S + ' x ' + D + ']');
-        kcatBlock.appendChild(renderPosIds(S, 0, { cached: true, cachedCount: cacheLen }));
-        kcatBlock.appendChild(renderMatrixGrid(k_concat, { cacheRows: cacheLen, newRows: cacheLen, delay: true }));
+        kcatBlock.appendChild(renderMatrixWithRowLabels(k_concat, 0, { cacheRows: cacheLen, newRows: cacheLen, cached: true, cachedCount: cacheLen, delay: true }));
         flow2.appendChild(kcatBlock);
 
         sec2.appendChild(flow2);
 
-        // Q after RoPE
+        // Q after RoPE + Rotation plot
         let qFlow = document.createElement('div');
         qFlow.className = 'matrix-flow';
         qFlow.style.marginTop = '16px';
         let qrBlock = makeBlock('Q_new after RoPE@' + newPos, 'new-label');
-        qrBlock.appendChild(renderPosIds(1, newPos));
-        qrBlock.appendChild(renderMatrixGrid(q_new_rope, { changed: q_new_orig, delay: true }));
+        qrBlock.appendChild(renderMatrixWithRowLabels(q_new_rope, newPos, { changed: q_new_orig, delay: true }));
         qFlow.appendChild(qrBlock);
+
+        // Rotation plot showing all cached + new positions
+        let allOrig = [...k_cache_orig, ...k_new_orig];
+        let allRope = [...k_cache_rope, ...k_new_rope];
+        qFlow.appendChild(renderRotationPlot(allOrig, allRope, 0, { cached: true, cachedCount: cacheLen }));
+
         sec2.appendChild(qFlow);
 
         sec2.appendChild(makeAnnotation([
             'RoPE applied at position <code>' + newPos + '</code>, ensuring correct relative distance.',
-            'Cache stores K, V with RoPE already applied — no need to recompute.',
+            'Plot: gray = cached positions (already rotated), orange = new token rotation.',
             '<code>K_full = concat(K_cache, K_new)</code> shapes: <code>[' + cacheLen + ',' + D + '] + [1,' + D + '] = [' + S + ',' + D + ']</code>'
         ]));
         main.appendChild(sec2);
@@ -1019,23 +1422,18 @@ function renderInferenceScene() {
         }
 
         let maskBlock = makeBlock('Attention Mask (single row)');
-        let kLabels = document.createElement('div');
-        kLabels.className = 'pos-row';
-        for (let j = 0; j < S; j++) {
-            let c = document.createElement('div');
-            c.className = 'pos-cell';
-            c.textContent = 'K' + j;
-            c.style.fontSize = '9px';
-            if (j < cacheLen) { c.classList.add('cached'); }
-            else { c.classList.add('active'); }
-            kLabels.appendChild(c);
-        }
-        maskBlock.appendChild(kLabels);
-        maskBlock.appendChild(maskGrid);
+        // Column labels on top
+        maskBlock.appendChild(renderColLabels(S, 'K', { cached: true, cachedCount: cacheLen }));
+        // Row label + grid
+        let maskWrapper = document.createElement('div');
+        maskWrapper.className = 'matrix-with-rows';
+        maskWrapper.appendChild(renderRowLabels(1, newPos, {}));
+        maskWrapper.appendChild(maskGrid);
+        maskBlock.appendChild(maskWrapper);
 
         sec3.appendChild(maskBlock);
         sec3.appendChild(makeAnnotation([
-            'All positions are <code>0</code> (visible). The new token attends to every cached token.',
+            'All positions are <code>0</code> (visible). The new Q_' + newPos + ' attends to every K.',
             'Causality is guaranteed by autoregressive generation — future tokens do not yet exist.',
             'Mask shape: <code>[1, ' + S + ']</code> not <code>[' + S + ', ' + S + ']</code>.'
         ]));
