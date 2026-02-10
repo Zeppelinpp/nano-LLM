@@ -1,11 +1,10 @@
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from datasets import load_dataset, load_from_disk
+from datasets import load_from_disk
 from transformers import AutoTokenizer
 import argparse
 import os
-import time
 from tqdm import tqdm
 import json
 from torch.utils.tensorboard import SummaryWriter
@@ -95,7 +94,17 @@ class OpenWebTextDataLoader:
         )
 
 
-def train_epoch(model, dataloader, optimizer, criterion, device, epoch, gradient_accumulation_steps=1, log_interval=100, writer=None):
+def train_epoch(
+    model,
+    dataloader,
+    optimizer,
+    criterion,
+    device,
+    epoch,
+    gradient_accumulation_steps=1,
+    log_interval=100,
+    writer=None,
+):
     """Train for one epoch"""
     model.train()
     total_loss = 0
@@ -111,7 +120,9 @@ def train_epoch(model, dataloader, optimizer, criterion, device, epoch, gradient
         logits, _ = model(input_ids[:, :-1], attention_mask=attention_mask[:, :-1])
 
         # Calculate loss
-        loss = criterion(logits.reshape(-1, logits.size(-1)), input_ids[:, 1:].reshape(-1))
+        loss = criterion(
+            logits.reshape(-1, logits.size(-1)), input_ids[:, 1:].reshape(-1)
+        )
 
         # Normalize loss for gradient accumulation
         loss = loss / gradient_accumulation_steps
@@ -128,15 +139,23 @@ def train_epoch(model, dataloader, optimizer, criterion, device, epoch, gradient
         total_loss += loss.item() * gradient_accumulation_steps
         num_batches += 1
 
-        pbar.set_postfix({"loss": loss.item() * gradient_accumulation_steps,
-                         "avg_loss": total_loss / num_batches})
+        pbar.set_postfix(
+            {
+                "loss": loss.item() * gradient_accumulation_steps,
+                "avg_loss": total_loss / num_batches,
+            }
+        )
 
         # Log to TensorBoard at intervals
         if writer is not None and (batch_idx + 1) % log_interval == 0:
             step_loss = total_loss / num_batches
             current_step = global_step + batch_idx + 1
             writer.add_scalar("Train/Loss_step", step_loss, current_step)
-            writer.add_scalar("Train/Perplexity_step", torch.exp(torch.tensor(step_loss)), current_step)
+            writer.add_scalar(
+                "Train/Perplexity_step",
+                torch.exp(torch.tensor(step_loss)),
+                current_step,
+            )
             writer.flush()  # Force write to disk
 
     avg_loss = total_loss / num_batches
@@ -144,7 +163,9 @@ def train_epoch(model, dataloader, optimizer, criterion, device, epoch, gradient
     # Log epoch-level metrics to TensorBoard
     if writer is not None:
         writer.add_scalar("Train/Loss_epoch", avg_loss, epoch)
-        writer.add_scalar("Train/Perplexity_epoch", torch.exp(torch.tensor(avg_loss)), epoch)
+        writer.add_scalar(
+            "Train/Perplexity_epoch", torch.exp(torch.tensor(avg_loss)), epoch
+        )
         writer.flush()  # Force write to disk
 
     return avg_loss
@@ -163,20 +184,25 @@ def validate(model, dataloader, criterion, device, epoch, writer=None):
             attention_mask = batch["attention_mask"].to(device)
 
             logits, _ = model(input_ids[:, :-1], attention_mask=attention_mask[:, :-1])
-            loss = criterion(logits.reshape(-1, logits.size(-1)), input_ids[:, 1:].reshape(-1))
+            loss = criterion(
+                logits.reshape(-1, logits.size(-1)), input_ids[:, 1:].reshape(-1)
+            )
 
             total_loss += loss.item()
             num_batches += 1
 
-            pbar.set_postfix({"loss": loss.item(),
-                            "avg_loss": total_loss / num_batches})
+            pbar.set_postfix(
+                {"loss": loss.item(), "avg_loss": total_loss / num_batches}
+            )
 
     avg_loss = total_loss / num_batches
 
     # Log to TensorBoard
     if writer is not None:
         writer.add_scalar("Validation/Loss_epoch", avg_loss, epoch)
-        writer.add_scalar("Validation/Perplexity_epoch", torch.exp(torch.tensor(avg_loss)), epoch)
+        writer.add_scalar(
+            "Validation/Perplexity_epoch", torch.exp(torch.tensor(avg_loss)), epoch
+        )
         writer.flush()  # Force write to disk
 
     return avg_loss
@@ -185,8 +211,12 @@ def validate(model, dataloader, criterion, device, epoch, writer=None):
 def main():
     parser = argparse.ArgumentParser(description="Train GeneralLLM on OpenWebText")
 
-    parser.add_argument("--data_dir", type=str, required=True,
-                       help="Path to local dataset directory (output of download_openwebtext.py)")
+    parser.add_argument(
+        "--data_dir",
+        type=str,
+        required=True,
+        help="Path to local dataset directory (output of download_openwebtext.py)",
+    )
 
     parser.add_argument("--vocab_size", type=int, default=50257)
     parser.add_argument("--hidden_size", type=int, default=768)
@@ -195,23 +225,44 @@ def main():
     parser.add_argument("--dropout", type=float, default=0.0)
     parser.add_argument("--max_position_embeddings", type=int, default=1024)
 
-    parser.add_argument("--batch_size", type=int, default=4,
-                       help="Batch size (recommend 4-8 for 16GB MPS)")
-    parser.add_argument("--max_length", type=int, default=512,
-                       help="Sequence length (recommend 512-1024 for 16GB MPS)")
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=4,
+        help="Batch size (recommend 4-8 for 16GB MPS)",
+    )
+    parser.add_argument(
+        "--max_length",
+        type=int,
+        default=512,
+        help="Sequence length (recommend 512-1024 for 16GB MPS)",
+    )
     parser.add_argument("--learning_rate", type=float, default=5e-5)
     parser.add_argument("--num_epochs", type=int, default=3)
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=4,
-                       help="Gradient accumulation for effective larger batch")
-    parser.add_argument("--log_interval", type=int, default=100,
-                       help="Log metrics to TensorBoard every N batches")
+    parser.add_argument(
+        "--gradient_accumulation_steps",
+        type=int,
+        default=4,
+        help="Gradient accumulation for effective larger batch",
+    )
+    parser.add_argument(
+        "--log_interval",
+        type=int,
+        default=100,
+        help="Log metrics to TensorBoard every N batches",
+    )
 
-    parser.add_argument("--tokenizer_name", type=str, default="gpt2",
-                       help="Use existing tokenizer from HuggingFace (e.g., gpt2)")
+    parser.add_argument(
+        "--tokenizer_name",
+        type=str,
+        default="gpt2",
+        help="Use existing tokenizer from HuggingFace (e.g., gpt2)",
+    )
 
     parser.add_argument("--output_dir", type=str, default="./checkpoints")
-    parser.add_argument("--device", type=str, default="auto",
-                       help="auto (detect), mps, cuda, or cpu")
+    parser.add_argument(
+        "--device", type=str, default="auto", help="auto (detect), mps, cuda, or cpu"
+    )
 
     args = parser.parse_args()
 
@@ -241,7 +292,7 @@ def main():
     ).to(device)
 
     num_params = sum(p.numel() for p in model.parameters())
-    print(f"Model parameters: {num_params:,} ({num_params/1e6:.2f}M)")
+    print(f"Model parameters: {num_params:,} ({num_params / 1e6:.2f}M)")
 
     # Initialize dataset and dataloader
     print(f"\nLoading tokenizer: {args.tokenizer_name}")
@@ -267,9 +318,7 @@ def main():
 
     # Optimizer and criterion
     optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=args.learning_rate,
-        weight_decay=0.01
+        model.parameters(), lr=args.learning_rate, weight_decay=0.01
     )
     criterion = nn.CrossEntropyLoss()
 
@@ -302,18 +351,27 @@ def main():
     for epoch in range(args.num_epochs):
         # Train
         train_loss = train_epoch(
-            model, train_dataloader, optimizer, criterion, device, epoch,
+            model,
+            train_dataloader,
+            optimizer,
+            criterion,
+            device,
+            epoch,
             gradient_accumulation_steps=args.gradient_accumulation_steps,
             log_interval=args.log_interval,
-            writer=writer
+            writer=writer,
         )
         train_losses.append(train_loss)
 
         # Validate
-        val_loss = validate(model, val_dataloader, criterion, device, epoch, writer=writer)
+        val_loss = validate(
+            model, val_dataloader, criterion, device, epoch, writer=writer
+        )
         val_losses.append(val_loss)
 
-        print(f"Epoch {epoch}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}")
+        print(
+            f"Epoch {epoch}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}"
+        )
 
         # Save checkpoint
         checkpoint_path = os.path.join(args.output_dir, f"checkpoint_epoch_{epoch}.pt")
