@@ -14,15 +14,18 @@ def download_file(url, output_path):
     response = requests.get(url, stream=True)
     response.raise_for_status()
 
-    total_size = int(response.headers.get('content-length', 0))
+    total_size = int(response.headers.get("content-length", 0))
 
-    with open(output_path, 'wb') as f, tqdm(
-        desc=os.path.basename(output_path),
-        total=total_size,
-        unit='B',
-        unit_scale=True,
-        unit_divisor=1024,
-    ) as pbar:
+    with (
+        open(output_path, "wb") as f,
+        tqdm(
+            desc=os.path.basename(output_path),
+            total=total_size,
+            unit="B",
+            unit_scale=True,
+            unit_divisor=1024,
+        ) as pbar,
+    ):
         for chunk in response.iter_content(chunk_size=8192):
             if chunk:
                 size = f.write(chunk)
@@ -76,9 +79,15 @@ def download_openwebtext_subset(output_dir):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Download subset of OpenWebText dataset")
-    parser.add_argument("--output_dir", type=str, default="./data/openwebtext_subset",
-                       help="Output directory for the dataset")
+    parser = argparse.ArgumentParser(
+        description="Download subset of OpenWebText dataset"
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="./data/openwebtext_subset",
+        help="Output directory for the dataset",
+    )
     args = parser.parse_args()
 
     download_openwebtext_subset(args.output_dir)

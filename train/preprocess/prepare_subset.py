@@ -89,11 +89,18 @@ def prepare_subset(data_dir, tokenizer_name="gpt2", max_length=512):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Prepare downloaded parquet file for training")
-    parser.add_argument("--data_dir", type=str, required=True,
-                       help="Directory containing train.parquet")
-    parser.add_argument("--max_length", type=int, default=512,
-                       help="Maximum sequence length for tokenization")
+    parser = argparse.ArgumentParser(
+        description="Prepare downloaded parquet file for training"
+    )
+    parser.add_argument(
+        "--data_dir", type=str, required=True, help="Directory containing train.parquet"
+    )
+    parser.add_argument(
+        "--max_length",
+        type=int,
+        default=512,
+        help="Maximum sequence length for tokenization",
+    )
     args = parser.parse_args()
 
     prepare_subset(args.data_dir, max_length=args.max_length)

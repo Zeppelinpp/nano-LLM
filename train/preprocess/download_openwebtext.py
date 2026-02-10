@@ -6,7 +6,6 @@ Usage: uv run train/download_openwebtext.py --output_dir ./data/openwebtext
 import argparse
 from datasets import load_dataset
 import os
-from tqdm import tqdm
 
 
 def download_openwebtext(output_dir, num_examples=None):
@@ -35,7 +34,9 @@ def download_openwebtext(output_dir, num_examples=None):
     if num_examples:
         # Save subset
         print(f"Saving {num_examples} examples from train split...")
-        subset = dataset["train"].select(range(min(num_examples, len(dataset["train"]))))
+        subset = dataset["train"].select(
+            range(min(num_examples, len(dataset["train"])))
+        )
         subset.save_to_disk(train_output_dir)
         print(f"Saved {len(subset)} examples to {train_output_dir}")
     else:
@@ -45,9 +46,13 @@ def download_openwebtext(output_dir, num_examples=None):
         print(f"Saved {len(dataset['train'])} examples to {train_output_dir}")
 
     # Create a small validation split (if not too large)
-    val_size = min(10000, len(dataset["train"]) // 10)  # 10% or 10k, whichever is smaller
+    val_size = min(
+        10000, len(dataset["train"]) // 10
+    )  # 10% or 10k, whichever is smaller
     print(f"\nCreating validation split with {val_size} examples...")
-    val_dataset = dataset["train"].select(range(len(dataset["train"]) - val_size, len(dataset["train"])))
+    val_dataset = dataset["train"].select(
+        range(len(dataset["train"]) - val_size, len(dataset["train"]))
+    )
 
     val_output_dir = os.path.join(output_dir, "validation")
     os.makedirs(val_output_dir, exist_ok=True)
@@ -60,9 +65,13 @@ def download_openwebtext(output_dir, num_examples=None):
         f.write(f"OpenWebText Dataset\n")
         f.write(f"===================\n\n")
         f.write(f"Downloaded: {num_examples if num_examples else 'Full dataset'}\n")
-        f.write(f"Train examples: {len(subset) if num_examples else len(dataset['train'])}\n")
+        f.write(
+            f"Train examples: {len(subset) if num_examples else len(dataset['train'])}\n"
+        )
         f.write(f"Validation examples: {len(val_dataset)}\n")
-        f.write(f"Total examples: {len(subset) if num_examples else len(dataset['train'])} + {len(val_dataset)}\n")
+        f.write(
+            f"Total examples: {len(subset) if num_examples else len(dataset['train'])} + {len(val_dataset)}\n"
+        )
 
     print(f"\n✓ Dataset downloaded successfully!")
     print(f"  Train data: {train_output_dir}")
@@ -74,10 +83,18 @@ def download_openwebtext(output_dir, num_examples=None):
 
 def main():
     parser = argparse.ArgumentParser(description="Download OpenWebText dataset")
-    parser.add_argument("--output_dir", type=str, default="./data/openwebtext",
-                       help="Output directory for the dataset")
-    parser.add_argument("--num_examples", type=int, default=None,
-                       help="Number of examples to download (None for full dataset)")
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="./data/openwebtext",
+        help="Output directory for the dataset",
+    )
+    parser.add_argument(
+        "--num_examples",
+        type=int,
+        default=None,
+        help="Number of examples to download (None for full dataset)",
+    )
     args = parser.parse_args()
 
     download_openwebtext(args.output_dir, args.num_examples)
