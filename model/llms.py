@@ -1,4 +1,5 @@
 import math
+from typing import Literal, Optional
 
 import torch
 import torch.nn as nn
@@ -73,6 +74,8 @@ class AttentionBlock(nn.Module):
         self,
         embed_dim: int,
         num_heads: int,
+        attention_type: Literal["MHA", "MQA", "GQA"] = "MHA",
+        num_kv_heads: Optional[int] = None,
         dropout: float = 0.0,
         use_rope: bool = True,
         rope_base: float = 10000.0,
@@ -83,18 +86,40 @@ class AttentionBlock(nn.Module):
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.head_dim = embed_dim // num_heads
+        self.attention_type = attention_type
         self.dropout = dropout
         self.use_rope = use_rope
 
+        if self.attention_type == "MHA":
+            self.num_kv_heads = num_heads
+        elif self.attention_type == "MQA":
+            self.num_kv_heads = 1
+        elif self.attention_type == "GQA":
+            if num_kv_heads is None:
+                raise ValueError("GQA mode need num_kv_heads")
+            self.num_kv_heads = num_kv_heads
+
+        assert num_heads % self.num_kv_heads == 0
+        self.num_queries_per_kv = num_heads // self.num_kv_heads
+
         # Linear projections for Q, K, V
         self.q_proj = nn.Linear(embed_dim, embed_dim, bias=False)
-        self.k_proj = nn.Linear(embed_dim, embed_dim, bias=False)
-        self.v_proj = nn.Linear(embed_dim, embed_dim, bias=False)
+        self.k_proj = nn.Linear(
+            embed_dim, self.num_kv_heads * self.head_dim, bias=False
+        )
+        self.v_proj = nn.Linear(
+            embed_dim, self.num_kv_heads * self.head_dim, bias=False
+        )
         self.out_proj = nn.Linear(embed_dim, embed_dim, bias=False)
 
         # Rotary Position Embedding
         if use_rope:
             self.rope = RoPE(self.head_dim, base=rope_base)
+
+    def _repead_kv(x: torch.Tensor, n_rep: int):
+        if n_rep == 1:
+            return x
+        return x.repeat_interleave(n_rep, dim=2)
 
     def forward(
         self,
@@ -137,15 +162,15 @@ class AttentionBlock(nn.Module):
 
         # Reshape for multi-head attention
         q = q.view(batch_size, seq_len, self.num_heads, self.head_dim)
-        k = k.view(batch_size, seq_len, self.num_heads, self.head_dim)
-        v = v.view(batch_size, seq_len, self.num_heads, self.head_dim)
+        k = k.view(batch_size, seq_len, self.num_kv_heads, self.head_dim)
+        v = v.view(batch_size, seq_len, self.num_kv_heads, self.head_dim)
 
         # Apply RoPE if enabled with correct position id
         if self.use_rope:
             q = self.rope(q, position_ids)
             k = self.rope(k, position_ids)
 
-        # Handle KV caching - 在应用 RoPE 之后拼接
+        # Handle KV caching - After RoPE then concat
         if use_kv_cache and kv_cache is not None:
             if "keys" in kv_cache and "values" in kv_cache:
                 k = torch.cat([kv_cache["keys"], k], dim=1)
@@ -154,16 +179,19 @@ class AttentionBlock(nn.Module):
             # Update cache with RoPE already applied
             kv_cache = {"keys": k, "values": v}
 
+        k_rep = self._repead_kv(k, self.num_queries_per_kv)
+        v_rep = self._repead_kv(v, self.num_queries_per_kv)
+
         # Transpose for attention calculation: (batch, num_heads, seq_len, head_dim)
         q = q.transpose(1, 2)
-        k = k.transpose(1, 2)
-        v = v.transpose(1, 2)
+        k_rep = k_rep.transpose(1, 2)
+        v_rep = v_rep.transpose(1, 2)
 
         # Calculate attention scores
-        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
+        scores = torch.matmul(q, k_rep.transpose(-2, -1)) / math.sqrt(self.head_dim)
 
         # Get k's actual length
-        kv_seq_len = k.shape[2]
+        kv_seq_len = k_rep.shape[2]
 
         # Apply causal mask
         if use_kv_cache and cache_len > 0:
@@ -199,7 +227,7 @@ class AttentionBlock(nn.Module):
             )
 
         # Apply attention to values
-        attn_output = torch.matmul(attn_weights, v)
+        attn_output = torch.matmul(attn_weights, v_rep)
 
         # Reshape back: (batch, seq_len, embed_dim)
         attn_output = (
