@@ -70,3 +70,12 @@ The primary benchmark compares:
 - **Without KV Cache**: Naive approach recomputing all projections each step
 
 Expected performance improvement: 2-3x speedup on CPU, 1.2-1.5x on MPS (varies by hardware).
+
+## Documentation Style Guide
+
+When creating or updating documentation in the `docs/` directory:
+- **No emojis**: Do not use emojis in documentation files
+- **Clean formatting**: Use markdown formatting (headers, lists, code blocks, tables)
+- **Visual aids**: Use ASCII diagrams, flow charts, or algorithmic art visualizations when helpful
+- **YAML frontmatter**: Include tags, createTime, and Last Modified metadata
+- **Technical precision**: Focus on clear, concise technical explanations
