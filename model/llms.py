@@ -1,7 +1,8 @@
+import math
+
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-import math
 
 
 class RoPE(nn.Module):
@@ -14,40 +15,39 @@ class RoPE(nn.Module):
         super().__init__()
         self.dim = dim
         self.base = base
+        # 预计算 inv_freq，避免重复计算
+        inv_freq = 1.0 / (
+            self.base ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim)
+        )
+        self.register_buffer("inv_freq", inv_freq)
 
-    def forward(self, x: torch.Tensor, seq_len: int) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
         """
         Apply RoPE to input tensor
 
         Args:
             x: Input tensor of shape (batch, seq_len, num_heads, head_dim)
-            seq_len: Sequence length
+            position_ids: Position indices of shape (seq_len,) or (batch, seq_len)
 
         Returns:
             Tensor with RoPE applied
         """
-        device = x.device
-        dtype = x.dtype
+        # position_ids: (seq_len,) or (batch, seq_len)
+        if position_ids.dim() == 1:
+            position_ids = position_ids.unsqueeze(0)  # (1, seq_len)
 
-        # Create position indices
-        positions = torch.arange(seq_len, device=device, dtype=dtype)
+        # 计算角度：(batch, seq_len, dim/2)
+        # position_ids: (batch, seq_len) -> (batch, seq_len, 1)
+        # inv_freq: (dim/2,) -> (1, 1, dim/2)
+        angles = position_ids.unsqueeze(-1).float() @ self.inv_freq.unsqueeze(0)
 
-        # Create theta for each dimension (apply to half of the dimensions)
-        inv_freq = 1.0 / (
-            self.base
-            ** (torch.arange(0, self.dim, 2, device=device, dtype=dtype) / self.dim)
-        )
-
-        # Calculate angles: (seq_len, dim/2)
-        angles = positions.unsqueeze(-1) * inv_freq.unsqueeze(0)
-
-        # Create sin and cos
+        # Create sin and cos: (batch, seq_len, dim/2)
         sin = angles.sin()
         cos = angles.cos()
 
-        # Reshape for broadcasting
-        sin = sin.view(seq_len, 1, self.dim // 2)
-        cos = cos.view(seq_len, 1, self.dim // 2)
+        # Reshape for broadcasting: (batch, seq_len, 1, dim/2)
+        sin = sin.unsqueeze(2)
+        cos = cos.unsqueeze(2)
 
         # Split x into two halves
         x_reshaped = x.view(*x.shape[:-1], 2, self.dim // 2)
@@ -100,6 +100,7 @@ class AttentionBlock(nn.Module):
         self,
         x: torch.Tensor,
         attention_mask: torch.Tensor = None,
+        position_ids: torch.Tensor = None,  # 新增：显式传入位置 IDs
         use_kv_cache: bool = False,
         kv_cache: dict = None,
     ) -> tuple[torch.Tensor, dict]:
@@ -109,6 +110,7 @@ class AttentionBlock(nn.Module):
         Args:
             x: Input tensor of shape (batch, seq_len, embed_dim)
             attention_mask: Attention mask (optional)
+            position_ids: Position IDs for RoPE (batch, seq_len) or (seq_len,)
             use_kv_cache: Whether to use KV caching
             kv_cache: Dictionary containing cached keys and values
 
@@ -116,6 +118,17 @@ class AttentionBlock(nn.Module):
             Tuple of (output_tensor, updated_kv_cache)
         """
         batch_size, seq_len, embed_dim = x.shape
+        device = x.device
+
+        # Calculate cache length for getting right position id for rope
+        cache_len = 0
+        if use_kv_cache and kv_cache is not None and "keys" in kv_cache:
+            cache_len = kv_cache["keys"].shape[1]
+
+        if position_ids is None:
+            position_ids = torch.arange(
+                cache_len, cache_len + seq_len, dtype=torch.long, device=device
+            )
 
         # Project to Q, K, V
         q = self.q_proj(x)  # (batch, seq_len, embed_dim)
@@ -127,19 +140,18 @@ class AttentionBlock(nn.Module):
         k = k.view(batch_size, seq_len, self.num_heads, self.head_dim)
         v = v.view(batch_size, seq_len, self.num_heads, self.head_dim)
 
-        # Apply RoPE if enabled
+        # Apply RoPE if enabled with correct position id
         if self.use_rope:
-            q = self.rope(q, seq_len)
-            k = self.rope(k, seq_len)
+            q = self.rope(q, position_ids)
+            k = self.rope(k, position_ids)
 
-        # Handle KV caching
+        # Handle KV caching - 在应用 RoPE 之后拼接
         if use_kv_cache and kv_cache is not None:
-            # Append new keys and values to cache
             if "keys" in kv_cache and "values" in kv_cache:
                 k = torch.cat([kv_cache["keys"], k], dim=1)
                 v = torch.cat([kv_cache["values"], v], dim=1)
 
-            # Update cache
+            # Update cache with RoPE already applied
             kv_cache = {"keys": k, "values": v}
 
         # Transpose for attention calculation: (batch, num_heads, seq_len, head_dim)
@@ -150,18 +162,31 @@ class AttentionBlock(nn.Module):
         # Calculate attention scores
         scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
 
-        # Apply causal mask (upper triangular)
-        causal_mask = torch.triu(
-            torch.ones(seq_len, seq_len, device=x.device, dtype=x.dtype), diagonal=1
-        )
-        causal_mask = causal_mask.masked_fill(causal_mask == 1, float("-inf"))
+        # Get k's actual length
+        kv_seq_len = k.shape[2]
+
+        # Apply causal mask
+        if use_kv_cache and cache_len > 0:
+            # Inference Time: new token can see history token and itself
+            # Mask is not needed or could be set to all zeros
+            causal_mask = torch.zeros(
+                seq_len, kv_seq_len, device=device, dtype=scores.dtype
+            )
+        else:
+            # Training Time: Causal Mask
+            causal_mask = torch.triu(
+                torch.ones(seq_len, kv_seq_len, device=device, dtype=scores.dtype),
+                diagonal=1,
+            )
+            causal_mask = causal_mask.masked_fill(causal_mask == 1, float("-inf"))
+
         scores = scores + causal_mask.unsqueeze(0).unsqueeze(0)
 
         # Apply external attention mask if provided
         if attention_mask is not None:
-            # attention_mask: (batch, seq_len)
-            # Reshape to: (batch, 1, 1, seq_len) for broadcasting with scores
-            mask = attention_mask.view(batch_size, 1, 1, seq_len)
+            # attention_mask: (batch, kv_seq_len)
+            # Reshape to: (batch, 1, 1, kv_seq_len) for broadcasting
+            mask = attention_mask.view(batch_size, 1, 1, -1)
             scores = scores + mask
 
         # Apply softmax
@@ -260,11 +285,21 @@ class TransformerBlock(nn.Module):
         self.ln2 = RMSNorm(hidden_size)
         self.mlp = MLP(hidden_size)
 
-    def forward(self, x, attention_mask=None, use_kv_cache=False, kv_cache=None):
+    def forward(
+        self,
+        x,
+        attention_mask=None,
+        position_ids=None,
+        use_kv_cache=False,
+        kv_cache=None,
+    ):
         # Attention with residual
         attn_out, kv_cache = self.attention(
-            self.ln1(x), attention_mask=attention_mask,
-            use_kv_cache=use_kv_cache, kv_cache=kv_cache
+            self.ln1(x),
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            use_kv_cache=use_kv_cache,
+            kv_cache=kv_cache,
         )
         x = x + attn_out
 
@@ -295,21 +330,29 @@ class GeneralLLM(nn.Module):
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.max_position_embeddings = max_position_embeddings
+        self.use_rope = use_rope
 
-        # Token and position embeddings
+        # Token embeddings
         self.token_embed = nn.Embedding(vocab_size, hidden_size)
-        self.position_embed = nn.Embedding(max_position_embeddings, hidden_size)
+
+        # Position embeddings - 只在不使用 RoPE 时使用
+        if not use_rope:
+            self.position_embed = nn.Embedding(max_position_embeddings, hidden_size)
+        else:
+            self.position_embed = None
 
         # Transformer blocks
-        self.blocks = nn.ModuleList([
-            TransformerBlock(
-                hidden_size=hidden_size,
-                num_heads=num_heads,
-                dropout=dropout,
-                use_rope=use_rope,
-            )
-            for _ in range(num_layers)
-        ])
+        self.blocks = nn.ModuleList(
+            [
+                TransformerBlock(
+                    hidden_size=hidden_size,
+                    num_heads=num_heads,
+                    dropout=dropout,
+                    use_rope=use_rope,
+                )
+                for _ in range(num_layers)
+            ]
+        )
 
         # Final layer norm and head
         self.ln_f = RMSNorm(hidden_size)
@@ -322,18 +365,32 @@ class GeneralLLM(nn.Module):
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor = None,
+        position_ids: torch.Tensor = None,
         use_kv_cache: bool = False,
         kv_cache_list: list = None,
     ) -> tuple[torch.Tensor, list]:
         batch_size, seq_len = input_ids.shape
         device = input_ids.device
 
-        # Create position IDs
-        position_ids = torch.arange(seq_len, dtype=torch.long, device=device)
-        position_ids = position_ids.unsqueeze(0).expand(batch_size, seq_len)
+        # 计算缓存长度（用于位置编码）
+        cache_len = 0
+        if use_kv_cache and kv_cache_list and kv_cache_list[0] is not None:
+            if "keys" in kv_cache_list[0]:
+                cache_len = kv_cache_list[0]["keys"].shape[1]
 
-        # Embeddings
-        x = self.token_embed(input_ids) + self.position_embed(position_ids)
+        # Create position IDs
+        if position_ids is None:
+            position_ids = torch.arange(
+                cache_len, cache_len + seq_len, dtype=torch.long, device=device
+            )
+            position_ids = position_ids.unsqueeze(0).expand(batch_size, seq_len)
+
+        # Token embeddings
+        x = self.token_embed(input_ids)
+
+        # Add position embeddings only if not using RoPE
+        if self.position_embed is not None:
+            x = x + self.position_embed(position_ids)
 
         # Forward through transformer blocks
         new_kv_cache_list = []
@@ -342,6 +399,7 @@ class GeneralLLM(nn.Module):
             x, new_kv_cache = block(
                 x,
                 attention_mask=attention_mask,
+                position_ids=position_ids,
                 use_kv_cache=use_kv_cache,
                 kv_cache=kv_cache,
             )
