@@ -11,3 +11,6 @@ wheels/
 
 # Static Data files
 data/
+
+# MacOS files
+.DS_store
