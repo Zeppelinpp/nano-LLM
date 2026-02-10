@@ -1,0 +1,1133 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RoPE & Causal Mask</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;1,6..72,300&display=swap" rel="stylesheet">
+<style>
+:root {
+    --bg: #f8f7f4;
+    --fg: #1a1a18;
+    --muted: #9e9b93;
+    --border: #e2e0d8;
+    --accent: #c45d3e;
+    --accent-dim: rgba(196,93,62,0.08);
+    --cache: #8b9aad;
+    --cache-dim: rgba(139,154,173,0.1);
+    --new: #c45d3e;
+    --cell-bg: #fff;
+    --cell-changed: rgba(196,93,62,0.12);
+    --mask-blocked: rgba(196,93,62,0.06);
+    --mask-open: rgba(106,155,93,0.08);
+    --green: #6a9b5d;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    font-family: 'DM Mono', monospace;
+    background: var(--bg);
+    color: var(--fg);
+    min-height: 100vh;
+    overflow-x: hidden;
+}
+
+/* Layout */
+.app {
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    min-height: 100vh;
+}
+
+/* Sidebar */
+.sidebar {
+    border-right: 1px solid var(--border);
+    padding: 40px 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 32px;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+}
+
+.logo {
+    font-family: 'Newsreader', serif;
+    font-size: 22px;
+    font-weight: 300;
+    font-style: italic;
+    letter-spacing: -0.02em;
+    color: var(--fg);
+}
+
+.logo span {
+    color: var(--accent);
+    font-weight: 400;
+}
+
+.section-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    margin-bottom: 12px;
+}
+
+/* Mode Tabs */
+.mode-tabs {
+    display: flex;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.mode-tab {
+    flex: 1;
+    padding: 10px 0;
+    font-family: 'DM Mono', monospace;
+    font-size: 13px;
+    font-weight: 500;
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    transition: all 0.3s ease;
+    letter-spacing: 0.04em;
+}
+
+.mode-tab.active {
+    background: var(--fg);
+    color: var(--bg);
+}
+
+/* Controls */
+.control {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.control label {
+    font-size: 13px;
+    color: var(--muted);
+}
+
+.control input[type="range"] {
+    -webkit-appearance: none;
+    width: 100%;
+    height: 2px;
+    background: var(--border);
+    border-radius: 1px;
+    outline: none;
+}
+
+.control input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 12px;
+    height: 12px;
+    background: var(--fg);
+    border-radius: 50%;
+    cursor: pointer;
+}
+
+.control-value {
+    font-size: 13px;
+    color: var(--muted);
+    text-align: right;
+}
+
+.control-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.btn-row {
+    display: flex;
+    gap: 6px;
+}
+
+.btn {
+    flex: 1;
+    padding: 9px 0;
+    font-family: 'DM Mono', monospace;
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--fg);
+    cursor: pointer;
+    border-radius: 3px;
+    transition: all 0.2s;
+}
+
+.btn:hover {
+    background: var(--fg);
+    color: var(--bg);
+}
+
+.step-indicator {
+    font-family: 'Newsreader', serif;
+    font-size: 14px;
+    font-style: italic;
+    color: var(--muted);
+    text-align: center;
+    padding: 6px 0;
+}
+
+/* Main */
+.main {
+    padding: 56px 64px;
+    display: flex;
+    flex-direction: column;
+    gap: 64px;
+}
+
+.scene-title {
+    font-family: 'Newsreader', serif;
+    font-size: 36px;
+    font-weight: 300;
+    letter-spacing: -0.02em;
+    color: var(--fg);
+    opacity: 0;
+    transform: translateY(12px);
+    animation: fadeUp 0.6s ease forwards;
+}
+
+.scene-title span {
+    color: var(--accent);
+}
+
+.scene-subtitle {
+    font-size: 14px;
+    color: var(--muted);
+    margin-top: 8px;
+    opacity: 0;
+    animation: fadeUp 0.6s ease 0.1s forwards;
+}
+
+/* Matrix Section */
+.matrix-section {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    opacity: 0;
+    animation: fadeUp 0.5s ease 0.15s forwards;
+}
+
+.matrix-label {
+    font-size: 13px;
+    color: var(--muted);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.matrix-flow {
+    display: flex;
+    align-items: center;
+    gap: 32px;
+    flex-wrap: wrap;
+}
+
+.matrix-block {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.matrix-block-label {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--fg);
+}
+
+.matrix-block-label.cache-label {
+    color: var(--cache);
+}
+
+.matrix-block-label.new-label {
+    color: var(--new);
+}
+
+.matrix-grid {
+    display: grid;
+    gap: 3px;
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.matrix-cell {
+    width: 66px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 400;
+    background: var(--cell-bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    transition: all 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+    position: relative;
+    overflow: hidden;
+}
+
+.matrix-cell.highlight {
+    background: var(--cell-changed);
+    border-color: var(--accent);
+    color: var(--accent);
+    font-weight: 500;
+}
+
+.matrix-cell.cache-cell {
+    background: var(--cache-dim);
+    border-color: rgba(139,154,173,0.2);
+    color: var(--cache);
+}
+
+.matrix-cell.new-cell {
+    background: var(--accent-dim);
+    border-color: rgba(196,93,62,0.25);
+    color: var(--accent);
+    font-weight: 500;
+}
+
+.matrix-cell.mask-blocked {
+    background: repeating-linear-gradient(
+        45deg,
+        transparent,
+        transparent 3px,
+        rgba(196,93,62,0.05) 3px,
+        rgba(196,93,62,0.05) 6px
+    );
+    color: var(--muted);
+    opacity: 0.5;
+}
+
+.matrix-cell.mask-open {
+    background: var(--mask-open);
+    border-color: rgba(106,155,93,0.2);
+}
+
+/* Operator symbols */
+.op-symbol {
+    font-family: 'Newsreader', serif;
+    font-size: 28px;
+    font-weight: 300;
+    color: var(--muted);
+    padding: 0 6px;
+    align-self: center;
+}
+
+/* Position IDs row */
+.pos-row {
+    display: flex;
+    gap: 3px;
+}
+
+.pos-cell {
+    width: 66px;
+    height: 26px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    color: var(--muted);
+    border-bottom: 2px solid transparent;
+    transition: all 0.4s ease;
+}
+
+.pos-cell.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+    font-weight: 500;
+}
+
+.pos-cell.cached {
+    color: var(--cache);
+    border-bottom-color: var(--cache);
+}
+
+/* Annotation */
+.annotation {
+    font-size: 14px;
+    color: var(--muted);
+    font-style: italic;
+    font-family: 'Newsreader', serif;
+    padding-left: 8px;
+    border-left: 2px solid var(--border);
+    margin-top: 12px;
+    line-height: 1.7;
+    opacity: 0;
+    animation: fadeUp 0.5s ease 0.3s forwards;
+}
+
+.annotation code {
+    font-family: 'DM Mono', monospace;
+    font-style: normal;
+    font-size: 12px;
+    color: var(--fg);
+    background: rgba(0,0,0,0.03);
+    padding: 2px 5px;
+    border-radius: 2px;
+}
+
+/* Divider */
+.divider {
+    height: 1px;
+    background: var(--border);
+    opacity: 0;
+    animation: fadeIn 0.4s ease 0.2s forwards;
+}
+
+/* Animations */
+@keyframes fadeUp {
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeIn {
+    to { opacity: 1; }
+}
+
+@keyframes cellPulse {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.08); }
+    100% { transform: scale(1); }
+}
+
+.cell-animate {
+    animation: cellPulse 0.5s ease;
+}
+
+/* Arrow */
+.arrow-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 0 8px;
+}
+
+.arrow-line {
+    width: 48px;
+    height: 2px;
+    background: var(--accent);
+    position: relative;
+}
+
+.arrow-line::after {
+    content: '';
+    position: absolute;
+    right: -1px;
+    top: -5px;
+    width: 0; height: 0;
+    border-left: 7px solid var(--accent);
+    border-top: 6px solid transparent;
+    border-bottom: 6px solid transparent;
+}
+
+.arrow-label {
+    font-size: 11px;
+    color: var(--accent);
+    white-space: nowrap;
+}
+
+/* Phase label */
+.phase-tag {
+    display: inline-block;
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 4px 10px;
+    border-radius: 3px;
+    font-weight: 500;
+}
+
+.phase-tag.train {
+    background: rgba(106,155,93,0.1);
+    color: var(--green);
+}
+
+.phase-tag.infer {
+    background: var(--accent-dim);
+    color: var(--accent);
+}
+
+/* Responsive */
+@media (max-width: 900px) {
+    .app { grid-template-columns: 1fr; }
+    .sidebar {
+        position: static;
+        height: auto;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+    }
+    .main { padding: 32px 24px; }
+    .matrix-cell { width: 52px; height: 32px; font-size: 11px; }
+    .pos-cell { width: 52px; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+    <aside class="sidebar">
+        <div class="logo"><span>RoPE</span> & Causal Mask</div>
+
+        <div>
+            <div class="section-label">Phase</div>
+            <div class="mode-tabs">
+                <button class="mode-tab active" id="tab-train" onclick="setMode('train')">Train</button>
+                <button class="mode-tab" id="tab-infer" onclick="setMode('inference')">Inference</button>
+            </div>
+        </div>
+
+        <div>
+            <div class="section-label">Sequence</div>
+            <div class="control">
+                <div class="control-row">
+                    <label>seq_len</label>
+                    <span class="control-value" id="seqLen-val">6</span>
+                </div>
+                <input type="range" id="seqLen" min="3" max="10" value="6" oninput="setSeqLen(this.value)">
+            </div>
+        </div>
+
+        <div>
+            <div class="section-label">Dimensions</div>
+            <div class="control">
+                <div class="control-row">
+                    <label>head_dim</label>
+                    <span class="control-value" id="headDim-val">4</span>
+                </div>
+                <input type="range" id="headDim" min="2" max="6" step="2" value="4" oninput="setHeadDim(this.value)">
+            </div>
+        </div>
+
+        <div>
+            <div class="section-label">Animation</div>
+            <div class="btn-row">
+                <button class="btn" onclick="playAnimation()">Play</button>
+                <button class="btn" onclick="resetView()">Reset</button>
+            </div>
+            <div class="step-indicator" id="step-indicator">Step 1 / 3</div>
+        </div>
+
+        <div>
+            <div class="section-label">Seed</div>
+            <div class="btn-row">
+                <button class="btn" onclick="prevSeed()">-</button>
+                <button class="btn" id="seed-display" style="flex:2; pointer-events:none;">42</button>
+                <button class="btn" onclick="nextSeed()">+</button>
+            </div>
+        </div>
+    </aside>
+
+    <main class="main" id="main-content">
+    </main>
+</div>
+
+<script>
+// ──────────────────────────────────────
+// State
+// ──────────────────────────────────────
+let state = {
+    mode: 'train',
+    seqLen: 6,
+    headDim: 4,
+    seed: 42,
+    step: 0,
+    maxSteps: 3,
+    animating: false
+};
+
+// ──────────────────────────────────────
+// Seeded RNG
+// ──────────────────────────────────────
+function mulberry32(a) {
+    return function() {
+        a |= 0; a = a + 0x6D2B79F5 | 0;
+        let t = Math.imul(a ^ a >>> 15, 1 | a);
+        t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+        return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    }
+}
+
+let rng;
+
+function initRng() {
+    rng = mulberry32(state.seed);
+}
+
+function randVal() {
+    return parseFloat((rng() * 2 - 1).toFixed(2));
+}
+
+// ──────────────────────────────────────
+// RoPE math (simplified 2D rotation)
+// ──────────────────────────────────────
+function computeRoPE(values, pos, dim) {
+    let result = [...values];
+    let base = 10000;
+    for (let i = 0; i < dim; i += 2) {
+        let freq = 1.0 / Math.pow(base, i / dim);
+        let angle = pos * freq;
+        let cosA = Math.cos(angle);
+        let sinA = Math.sin(angle);
+        let v1 = result[i];
+        let v2 = i + 1 < dim ? result[i + 1] : 0;
+        result[i] = parseFloat((v1 * cosA - v2 * sinA).toFixed(2));
+        if (i + 1 < dim) {
+            result[i + 1] = parseFloat((v1 * sinA + v2 * cosA).toFixed(2));
+        }
+    }
+    return result;
+}
+
+// ──────────────────────────────────────
+// Generate matrix data
+// ──────────────────────────────────────
+function generateMatrix(rows, cols) {
+    let m = [];
+    for (let r = 0; r < rows; r++) {
+        let row = [];
+        for (let c = 0; c < cols; c++) {
+            row.push(randVal());
+        }
+        m.push(row);
+    }
+    return m;
+}
+
+function applyRoPEToMatrix(matrix, startPos) {
+    return matrix.map((row, i) => computeRoPE(row, startPos + i, row.length));
+}
+
+// ──────────────────────────────────────
+// Rendering
+// ──────────────────────────────────────
+function renderMatrixGrid(matrix, opts = {}) {
+    let cols = matrix[0].length;
+    let grid = document.createElement('div');
+    grid.className = 'matrix-grid';
+    grid.style.gridTemplateColumns = `repeat(${cols}, 66px)`;
+
+    matrix.forEach((row, ri) => {
+        row.forEach((val, ci) => {
+            let cell = document.createElement('div');
+            cell.className = 'matrix-cell';
+            cell.textContent = val.toFixed(2);
+
+            if (opts.highlightRows && opts.highlightRows.includes(ri)) {
+                cell.classList.add('highlight');
+            }
+            if (opts.cacheRows && ri < opts.cacheRows) {
+                cell.classList.add('cache-cell');
+            }
+            if (opts.newRows && ri >= opts.newRows) {
+                cell.classList.add('new-cell');
+            }
+            if (opts.changed) {
+                let prev = opts.changed[ri]?.[ci];
+                if (prev !== undefined && prev !== val) {
+                    cell.classList.add('highlight');
+                }
+            }
+
+            if (opts.delay) {
+                cell.style.opacity = '0';
+                cell.style.transform = 'scale(0.8)';
+                cell.style.transition = `all 0.4s cubic-bezier(0.22,1,0.36,1) ${(ri * cols + ci) * 30}ms`;
+                requestAnimationFrame(() => {
+                    cell.style.opacity = '1';
+                    cell.style.transform = 'scale(1)';
+                });
+            }
+
+            grid.appendChild(cell);
+        });
+    });
+    return grid;
+}
+
+function renderPosIds(len, startPos, opts = {}) {
+    let row = document.createElement('div');
+    row.className = 'pos-row';
+    for (let i = 0; i < len; i++) {
+        let cell = document.createElement('div');
+        cell.className = 'pos-cell';
+        cell.textContent = `pos ${startPos + i}`;
+        if (opts.cached && i < (opts.cachedCount || 0)) {
+            cell.classList.add('cached');
+        } else {
+            cell.classList.add('active');
+        }
+        row.appendChild(cell);
+    }
+    return row;
+}
+
+function makeBlock(labelText, labelClass) {
+    let block = document.createElement('div');
+    block.className = 'matrix-block';
+    let label = document.createElement('div');
+    label.className = 'matrix-block-label' + (labelClass ? ' ' + labelClass : '');
+    label.textContent = labelText;
+    block.appendChild(label);
+    return block;
+}
+
+function makeOp(symbol) {
+    let op = document.createElement('div');
+    op.className = 'op-symbol';
+    op.textContent = symbol;
+    return op;
+}
+
+function makeArrow(labelText) {
+    let c = document.createElement('div');
+    c.className = 'arrow-container';
+    let line = document.createElement('div');
+    line.className = 'arrow-line';
+    let lbl = document.createElement('div');
+    lbl.className = 'arrow-label';
+    lbl.textContent = labelText;
+    c.appendChild(lbl);
+    c.appendChild(line);
+    return c;
+}
+
+function makeAnnotation(lines) {
+    let a = document.createElement('div');
+    a.className = 'annotation';
+    a.innerHTML = lines.join('<br>');
+    return a;
+}
+
+function makePhaseTag(mode) {
+    let tag = document.createElement('span');
+    tag.className = 'phase-tag ' + (mode === 'train' ? 'train' : 'infer');
+    tag.textContent = mode === 'train' ? 'TRAINING' : 'INFERENCE';
+    return tag;
+}
+
+// ──────────────────────────────────────
+// Scene builders
+// ──────────────────────────────────────
+function renderTrainScene() {
+    let main = document.getElementById('main-content');
+    main.innerHTML = '';
+    initRng();
+
+    let S = state.seqLen;
+    let D = state.headDim;
+
+    // Title
+    let header = document.createElement('div');
+    let title = document.createElement('div');
+    title.className = 'scene-title';
+    title.innerHTML = 'Training: <span>Full Sequence RoPE</span>';
+    let sub = document.createElement('div');
+    sub.className = 'scene-subtitle';
+    sub.textContent = `seq_len=${S}  head_dim=${D}  position_ids=[0..${S-1}]`;
+    header.appendChild(makePhaseTag('train'));
+    header.appendChild(title);
+    header.appendChild(sub);
+    main.appendChild(header);
+
+    // Step 1: Original Q, K
+    let q_orig = generateMatrix(S, D);
+    let k_orig = generateMatrix(S, D);
+
+    if (state.step >= 0) {
+        let sec1 = document.createElement('div');
+        sec1.className = 'matrix-section';
+        let lbl1 = document.createElement('div');
+        lbl1.className = 'matrix-label';
+        lbl1.textContent = 'Step 1 — Linear Projection Q, K';
+        sec1.appendChild(lbl1);
+
+        let flow1 = document.createElement('div');
+        flow1.className = 'matrix-flow';
+
+        let qBlock = makeBlock('Q  [' + S + ' x ' + D + ']');
+        qBlock.appendChild(renderPosIds(S, 0));
+        qBlock.appendChild(renderMatrixGrid(q_orig, { delay: true }));
+        flow1.appendChild(qBlock);
+
+        flow1.appendChild(makeOp(','));
+
+        let kBlock = makeBlock('K  [' + S + ' x ' + D + ']');
+        kBlock.appendChild(renderPosIds(S, 0));
+        kBlock.appendChild(renderMatrixGrid(k_orig, { delay: true }));
+        flow1.appendChild(kBlock);
+
+        sec1.appendChild(flow1);
+        sec1.appendChild(makeAnnotation([
+            '<code>q = W_q @ x</code>, <code>k = W_k @ x</code>',
+            'Each row corresponds to one token in the full sequence.'
+        ]));
+        main.appendChild(sec1);
+    }
+
+    // Step 2: After RoPE
+    if (state.step >= 1) {
+        main.appendChild(createDivider());
+
+        let q_rope = applyRoPEToMatrix(q_orig, 0);
+        let k_rope = applyRoPEToMatrix(k_orig, 0);
+
+        let sec2 = document.createElement('div');
+        sec2.className = 'matrix-section';
+        let lbl2 = document.createElement('div');
+        lbl2.className = 'matrix-label';
+        lbl2.textContent = 'Step 2 — Apply RoPE (position 0..' + (S-1) + ')';
+        sec2.appendChild(lbl2);
+
+        let flow2 = document.createElement('div');
+        flow2.className = 'matrix-flow';
+
+        let qrBlock = makeBlock('Q after RoPE');
+        qrBlock.appendChild(renderPosIds(S, 0));
+        qrBlock.appendChild(renderMatrixGrid(q_rope, { changed: q_orig, delay: true }));
+        flow2.appendChild(qrBlock);
+
+        flow2.appendChild(makeOp(','));
+
+        let krBlock = makeBlock('K after RoPE');
+        krBlock.appendChild(renderPosIds(S, 0));
+        krBlock.appendChild(renderMatrixGrid(k_rope, { changed: k_orig, delay: true }));
+        flow2.appendChild(krBlock);
+
+        sec2.appendChild(flow2);
+        sec2.appendChild(makeAnnotation([
+            'Each row <code>i</code> is rotated by angle <code>theta = pos_i * freq</code>.',
+            'Highlighted cells show values changed by rotation.',
+            'In training, all positions are encoded simultaneously.'
+        ]));
+        main.appendChild(sec2);
+    }
+
+    // Step 3: Causal Mask
+    if (state.step >= 2) {
+        main.appendChild(createDivider());
+
+        let sec3 = document.createElement('div');
+        sec3.className = 'matrix-section';
+        let lbl3 = document.createElement('div');
+        lbl3.className = 'matrix-label';
+        lbl3.textContent = 'Step 3 — Causal Mask  [' + S + ' x ' + S + ']';
+        sec3.appendChild(lbl3);
+
+        let maskGrid = document.createElement('div');
+        maskGrid.className = 'matrix-grid';
+        maskGrid.style.gridTemplateColumns = `repeat(${S}, 66px)`;
+
+        for (let i = 0; i < S; i++) {
+            for (let j = 0; j < S; j++) {
+                let cell = document.createElement('div');
+                cell.className = 'matrix-cell';
+                if (j > i) {
+                    cell.classList.add('mask-blocked');
+                    cell.textContent = '-inf';
+                } else {
+                    cell.classList.add('mask-open');
+                    cell.textContent = '0';
+                }
+                cell.style.opacity = '0';
+                cell.style.transition = `all 0.3s ease ${(i * S + j) * 20}ms`;
+                requestAnimationFrame(() => { cell.style.opacity = '1'; });
+                maskGrid.appendChild(cell);
+            }
+        }
+
+        let maskBlock = makeBlock('Attention Mask');
+        // Add K position labels on top
+        let kLabels = document.createElement('div');
+        kLabels.className = 'pos-row';
+        for (let j = 0; j < S; j++) {
+            let c = document.createElement('div');
+            c.className = 'pos-cell active';
+            c.textContent = 'K' + j;
+            c.style.fontSize = '9px';
+            kLabels.appendChild(c);
+        }
+        maskBlock.appendChild(kLabels);
+        maskBlock.appendChild(maskGrid);
+
+        sec3.appendChild(maskBlock);
+        sec3.appendChild(makeAnnotation([
+            'Upper triangle is <code>-inf</code>: each token can only attend to itself and earlier positions.',
+            'Mask shape matches <code>[seq_len, seq_len]</code> — all Q and K come from the same full sequence.'
+        ]));
+        main.appendChild(sec3);
+    }
+
+    updateStepIndicator();
+}
+
+function renderInferenceScene() {
+    let main = document.getElementById('main-content');
+    main.innerHTML = '';
+    initRng();
+
+    let S = state.seqLen;
+    let D = state.headDim;
+    let cacheLen = S - 1;
+    let newPos = cacheLen;
+
+    // Title
+    let header = document.createElement('div');
+    let title = document.createElement('div');
+    title.className = 'scene-title';
+    title.innerHTML = 'Inference: <span>Cache + New Token</span>';
+    let sub = document.createElement('div');
+    sub.className = 'scene-subtitle';
+    sub.textContent = `cache_len=${cacheLen}  new_seq_len=1  position_ids=[${newPos}]`;
+    header.appendChild(makePhaseTag('inference'));
+    header.appendChild(title);
+    header.appendChild(sub);
+    main.appendChild(header);
+
+    // Generate data — cache part was computed in prior steps
+    let k_cache_orig = generateMatrix(cacheLen, D);
+    let k_cache_rope = applyRoPEToMatrix(k_cache_orig, 0);
+
+    // New token projection
+    let q_new_orig = generateMatrix(1, D);
+    let k_new_orig = generateMatrix(1, D);
+
+    if (state.step >= 0) {
+        let sec1 = document.createElement('div');
+        sec1.className = 'matrix-section';
+        let lbl1 = document.createElement('div');
+        lbl1.className = 'matrix-label';
+        lbl1.textContent = 'Step 1 — New Token Projection (only the new token)';
+        sec1.appendChild(lbl1);
+
+        let flow1 = document.createElement('div');
+        flow1.className = 'matrix-flow';
+
+        let qBlock = makeBlock('Q_new  [1 x ' + D + ']', 'new-label');
+        qBlock.appendChild(renderPosIds(1, newPos));
+        qBlock.appendChild(renderMatrixGrid(q_new_orig, { delay: true }));
+        flow1.appendChild(qBlock);
+
+        flow1.appendChild(makeOp(','));
+
+        let kBlock = makeBlock('K_new  [1 x ' + D + ']', 'new-label');
+        kBlock.appendChild(renderPosIds(1, newPos));
+        kBlock.appendChild(renderMatrixGrid(k_new_orig, { delay: true }));
+        flow1.appendChild(kBlock);
+
+        sec1.appendChild(flow1);
+        sec1.appendChild(makeAnnotation([
+            'Only the new token is projected. Cached tokens are NOT recomputed.',
+            '<code>position_ids = [' + newPos + ']</code>  (starts from <code>cache_len</code>, not 0)'
+        ]));
+        main.appendChild(sec1);
+    }
+
+    // Step 2: Apply RoPE with correct position
+    if (state.step >= 1) {
+        main.appendChild(createDivider());
+
+        let q_new_rope = applyRoPEToMatrix(q_new_orig, newPos);
+        let k_new_rope = applyRoPEToMatrix(k_new_orig, newPos);
+
+        let sec2 = document.createElement('div');
+        sec2.className = 'matrix-section';
+        let lbl2 = document.createElement('div');
+        lbl2.className = 'matrix-label';
+        lbl2.textContent = 'Step 2 — Apply RoPE at position ' + newPos + ', then concat K cache';
+        sec2.appendChild(lbl2);
+
+        let flow2 = document.createElement('div');
+        flow2.className = 'matrix-flow';
+
+        // Cached K (already has RoPE applied at positions 0..cacheLen-1)
+        let kcBlock = makeBlock('K_cache  [' + cacheLen + ' x ' + D + ']', 'cache-label');
+        kcBlock.appendChild(renderPosIds(cacheLen, 0, { cached: true, cachedCount: cacheLen }));
+        kcBlock.appendChild(renderMatrixGrid(k_cache_rope, { cacheRows: cacheLen, delay: true }));
+        flow2.appendChild(kcBlock);
+
+        flow2.appendChild(makeOp('+'));
+
+        // New K after RoPE
+        let knBlock = makeBlock('K_new (RoPE@' + newPos + ')', 'new-label');
+        knBlock.appendChild(renderPosIds(1, newPos));
+        knBlock.appendChild(renderMatrixGrid(k_new_rope, { changed: k_new_orig, delay: true }));
+        flow2.appendChild(knBlock);
+
+        // Arrow
+        flow2.appendChild(makeArrow('concat'));
+
+        // Concatenated result
+        let k_concat = [...k_cache_rope, ...k_new_rope];
+        let kcatBlock = makeBlock('K_full  [' + S + ' x ' + D + ']');
+        kcatBlock.appendChild(renderPosIds(S, 0, { cached: true, cachedCount: cacheLen }));
+        kcatBlock.appendChild(renderMatrixGrid(k_concat, { cacheRows: cacheLen, newRows: cacheLen, delay: true }));
+        flow2.appendChild(kcatBlock);
+
+        sec2.appendChild(flow2);
+
+        // Q after RoPE
+        let qFlow = document.createElement('div');
+        qFlow.className = 'matrix-flow';
+        qFlow.style.marginTop = '16px';
+        let qrBlock = makeBlock('Q_new after RoPE@' + newPos, 'new-label');
+        qrBlock.appendChild(renderPosIds(1, newPos));
+        qrBlock.appendChild(renderMatrixGrid(q_new_rope, { changed: q_new_orig, delay: true }));
+        qFlow.appendChild(qrBlock);
+        sec2.appendChild(qFlow);
+
+        sec2.appendChild(makeAnnotation([
+            'RoPE applied at position <code>' + newPos + '</code>, ensuring correct relative distance.',
+            'Cache stores K, V with RoPE already applied — no need to recompute.',
+            '<code>K_full = concat(K_cache, K_new)</code> shapes: <code>[' + cacheLen + ',' + D + '] + [1,' + D + '] = [' + S + ',' + D + ']</code>'
+        ]));
+        main.appendChild(sec2);
+    }
+
+    // Step 3: Causal Mask for inference
+    if (state.step >= 2) {
+        main.appendChild(createDivider());
+
+        let sec3 = document.createElement('div');
+        sec3.className = 'matrix-section';
+        let lbl3 = document.createElement('div');
+        lbl3.className = 'matrix-label';
+        lbl3.textContent = 'Step 3 — Causal Mask  [1 x ' + S + ']   (new token sees all history)';
+        sec3.appendChild(lbl3);
+
+        let maskGrid = document.createElement('div');
+        maskGrid.className = 'matrix-grid';
+        maskGrid.style.gridTemplateColumns = `repeat(${S}, 66px)`;
+
+        for (let j = 0; j < S; j++) {
+            let cell = document.createElement('div');
+            cell.className = 'matrix-cell mask-open';
+            cell.textContent = '0';
+            cell.style.opacity = '0';
+            cell.style.transition = `all 0.35s ease ${j * 50}ms`;
+            requestAnimationFrame(() => { cell.style.opacity = '1'; });
+            maskGrid.appendChild(cell);
+        }
+
+        let maskBlock = makeBlock('Attention Mask (single row)');
+        let kLabels = document.createElement('div');
+        kLabels.className = 'pos-row';
+        for (let j = 0; j < S; j++) {
+            let c = document.createElement('div');
+            c.className = 'pos-cell';
+            c.textContent = 'K' + j;
+            c.style.fontSize = '9px';
+            if (j < cacheLen) { c.classList.add('cached'); }
+            else { c.classList.add('active'); }
+            kLabels.appendChild(c);
+        }
+        maskBlock.appendChild(kLabels);
+        maskBlock.appendChild(maskGrid);
+
+        sec3.appendChild(maskBlock);
+        sec3.appendChild(makeAnnotation([
+            'All positions are <code>0</code> (visible). The new token attends to every cached token.',
+            'Causality is guaranteed by autoregressive generation — future tokens do not yet exist.',
+            'Mask shape: <code>[1, ' + S + ']</code> not <code>[' + S + ', ' + S + ']</code>.'
+        ]));
+        main.appendChild(sec3);
+    }
+
+    updateStepIndicator();
+}
+
+function createDivider() {
+    let d = document.createElement('div');
+    d.className = 'divider';
+    return d;
+}
+
+// ──────────────────────────────────────
+// Controls
+// ──────────────────────────────────────
+function setMode(mode) {
+    state.mode = mode;
+    state.step = 0;
+    document.getElementById('tab-train').classList.toggle('active', mode === 'train');
+    document.getElementById('tab-infer').classList.toggle('active', mode === 'inference');
+    render();
+}
+
+function setSeqLen(val) {
+    state.seqLen = parseInt(val);
+    document.getElementById('seqLen-val').textContent = val;
+    state.step = 0;
+    render();
+}
+
+function setHeadDim(val) {
+    state.headDim = parseInt(val);
+    document.getElementById('headDim-val').textContent = val;
+    state.step = 0;
+    render();
+}
+
+function playAnimation() {
+    if (state.animating) return;
+    state.step = 0;
+    state.animating = true;
+    render();
+
+    let interval = setInterval(() => {
+        if (state.step < state.maxSteps - 1) {
+            state.step++;
+            render();
+        } else {
+            clearInterval(interval);
+            state.animating = false;
+        }
+    }, 1200);
+}
+
+function resetView() {
+    state.step = 0;
+    state.animating = false;
+    render();
+}
+
+function prevSeed() {
+    state.seed = Math.max(1, state.seed - 1);
+    document.getElementById('seed-display').textContent = state.seed;
+    state.step = 0;
+    render();
+}
+
+function nextSeed() {
+    state.seed++;
+    document.getElementById('seed-display').textContent = state.seed;
+    state.step = 0;
+    render();
+}
+
+function updateStepIndicator() {
+    document.getElementById('step-indicator').textContent =
+        `Step ${state.step + 1} / ${state.maxSteps}`;
+}
+
+function render() {
+    if (state.mode === 'train') {
+        renderTrainScene();
+    } else {
+        renderInferenceScene();
+    }
+}
+
+// Init
+render();
+</script>
+</body>
+</html>
