@@ -4,8 +4,9 @@ Usage: uv run train/download_openwebtext.py --output_dir ./data/openwebtext
 """
 
 import argparse
-from datasets import load_dataset
 import os
+
+from datasets import load_dataset
 
 
 def download_openwebtext(output_dir, num_examples=None):
