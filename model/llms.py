@@ -116,7 +116,7 @@ class AttentionBlock(nn.Module):
         if use_rope:
             self.rope = RoPE(self.head_dim, base=rope_base)
 
-    def _repead_kv(x: torch.Tensor, n_rep: int):
+    def _repeat_kv(self, x: torch.Tensor, n_rep: int):
         if n_rep == 1:
             return x
         return x.repeat_interleave(n_rep, dim=2)
@@ -171,16 +171,16 @@ class AttentionBlock(nn.Module):
             k = self.rope(k, position_ids)
 
         # Handle KV caching - After RoPE then concat
-        if use_kv_cache and kv_cache is not None:
-            if "keys" in kv_cache and "values" in kv_cache:
+        if use_kv_cache:
+            if kv_cache is not None and "keys" in kv_cache and "values" in kv_cache:
                 k = torch.cat([kv_cache["keys"], k], dim=1)
                 v = torch.cat([kv_cache["values"], v], dim=1)
 
             # Update cache with RoPE already applied
             kv_cache = {"keys": k, "values": v}
 
-        k_rep = self._repead_kv(k, self.num_queries_per_kv)
-        v_rep = self._repead_kv(v, self.num_queries_per_kv)
+        k_rep = self._repeat_kv(k, self.num_queries_per_kv)
+        v_rep = self._repeat_kv(v, self.num_queries_per_kv)
 
         # Transpose for attention calculation: (batch, num_heads, seq_len, head_dim)
         q = q.transpose(1, 2)
@@ -299,6 +299,8 @@ class TransformerBlock(nn.Module):
         self,
         hidden_size: int = 768,
         num_heads: int = 12,
+        attention_type: Literal["MHA", "MQA", "GQA"] = "MHA",
+        num_kv_heads: Optional[int] = None,
         dropout: float = 0.0,
         use_rope: bool = True,
     ):
@@ -307,6 +309,8 @@ class TransformerBlock(nn.Module):
         self.attention = AttentionBlock(
             embed_dim=hidden_size,
             num_heads=num_heads,
+            attention_type=attention_type,
+            num_kv_heads=num_kv_heads,
             dropout=dropout,
             use_rope=use_rope,
         )
@@ -349,6 +353,8 @@ class GeneralLLM(nn.Module):
         hidden_size: int = 768,
         num_layers: int = 12,
         num_heads: int = 12,
+        attention_type: Literal["MHA", "MQA", "GQA"] = "MHA",
+        num_kv_heads: Optional[int] = None,
         dropout: float = 0.0,
         use_rope: bool = True,
         max_position_embeddings: int = 1024,
@@ -375,6 +381,8 @@ class GeneralLLM(nn.Module):
                 TransformerBlock(
                     hidden_size=hidden_size,
                     num_heads=num_heads,
+                    attention_type=attention_type,
+                    num_kv_heads=num_kv_heads,
                     dropout=dropout,
                     use_rope=use_rope,
                 )
